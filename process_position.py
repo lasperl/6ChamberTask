@@ -24,6 +24,10 @@ from scipy.ndimage import uniform_filter1d
 from scipy.signal import savgol_filter
 from scipy.ndimage import gaussian_filter
 import matplotlib.patches as mpatches
+from scipy.stats import binned_statistic_2d
+
+# testing velocity
+from scipy.interpolate import interp1d
 
 # Fixing dependency issues
 if not hasattr(np, 'NaN'):
@@ -286,6 +290,44 @@ def smooth_diff(node_loc, win=25, poly=3):
     node_vel = np.linalg.norm(node_loc_vel, axis=1)
 
     return node_vel
+def fill_missing(Y, kind="linear"):
+    """Fills missing values independently along each dimension after the first."""
+
+    # Store initial shape.
+    initial_shape = Y.shape
+
+    # Flatten after first dim.
+    Y = Y.reshape((initial_shape[0], -1))
+
+    # Interpolate along each slice.
+    for i in range(Y.shape[-1]):
+        y = Y[:, i]
+
+        # Build interpolant.
+        x = np.flatnonzero(~np.isnan(y))
+        f = interp1d(x, y[x], kind=kind, fill_value=np.nan, bounds_error=False)
+
+        # Fill missing
+        xq = np.flatnonzero(np.isnan(y))
+        y[xq] = f(xq)
+
+        # Fill leading or trailing NaNs with the nearest non-NaN values
+        mask = np.isnan(y)
+        y[mask] = np.interp(np.flatnonzero(mask), np.flatnonzero(~mask), y[~mask])
+
+        # Save slice
+        Y[:, i] = y
+
+    # Restore to initial shape.
+    Y = Y.reshape(initial_shape)
+
+    return Y
+
+
+def _proj_line(key):
+    if not divisions.get(key):
+        return None
+    return project_fcn(np.array(divisions[key], dtype=float))
 
 
 # PARAMETERS
@@ -306,7 +348,7 @@ bins = [np.linspace(-25, 50, 31),
 folder = "/data07/Lina/6Chamber_LbO/Data_analysis"
 
 rats = [
-    # 'F_B1C1R1',
+    'F_B1C1R1',
     # 'F_B1C1R3',
     # 'M_B1C1R1',
     # 'M_B1C1R3',
@@ -317,11 +359,11 @@ rats = [
     # 'F_B3C1R1',
     # 'F_B3C1R3',
     # 'M_B3C1R1',
-    'M_B3C1R3'
+    # 'M_B3C1R3'
 ]
 
 phases = [
-    'Baseline_Closed',
+    #'Baseline_Closed',
     #'Baseline_Open',
     #'Observation_Neutral',
     #'Observation_Shock',
@@ -358,17 +400,21 @@ for rat in rats:
 
         start_end = rat_info['phase'][phase]['start-end']
 
-        # estimate calibration transform (arena corners -> canonical geometry)
+        # estimate calibration transform
         project_fcn = project2area(original_coords=rat_info['phase'][phase]['corners_coords'],
                                    projection_coords=overall_info['arena']['coords'])
 
-        # exclude low-confidence points (no-op while score_th = 0.0)
+        divisions = rat_info['phase'][phase].get('mid_compartment', {})
+        top_chamber = _proj_line('left')
+        bottom_chamber = _proj_line('right')
+        line_midbtw = _proj_line('middle_between')
+
+        # exclude low-confidence points (if threshold is set)
         idx_out = np.dstack([(scores < score_th), (scores < score_th)]).swapaxes(1, 2)
         nodes_loc[idx_out] = np.nan
 
-        # already dense + frame-aligned: no frameIDX scatter step needed
         nodes_xy = nodes_loc.copy()
-        nodes_xy = nodes_xy[start_end[0]:start_end[1]]
+        nodes_xy = nodes_xy[start_end[0]:start_end[1]] # same length
 
         if len(nodes_xy) != len(time):
             idx_stop = np.min([len(nodes_xy), len(time)])
@@ -402,11 +448,61 @@ for rat in rats:
 
         plt.figure(figsize=(7, 7))
         plt.plot(xy_head[:, 0], xy_head[:, 1], color='k')
+        #plt.axhline(37.5, color='crimson', ls='--', lw=1.5, label='shock/safe divider')
+        for ln, name, col in [(top_chamber, 'right', 'tab:blue'),
+                              (bottom_chamber, 'left', 'tab:green'),
+                              (line_midbtw, 'mid', 'tab:orange')]:
+            if ln is not None:
+                plt.plot(ln[:, 0], ln[:, 1], color=col, ls='--', lw=1.5, label=name)
+        plt.legend()
+        plt.legend()
         plt.title('Raw Traces (head)')
         plt.savefig(os.path.join(repo, 'Traces_head_xy.png'),
                     transparent=False)
         plt.show()
         plt.close()
+
+        arena_coords = np.array(overall_info['arena']['coords'])
+        center_arena = arena_coords.mean(axis=0)
+
+        # align maps so that shock side is the same for everyone (now all hve shock side on the right!)
+        if rat_info['shock_side'] == 'left':
+            # arena_coords = np.array(overall_info['arena']['coords'])
+            # center_arena = arena_coords.mean(axis=0)
+            # flip_xy_head = xy_head.copy()
+            # flip_xy_head[:, 1] = 2*center_arena[1]-xy_head[:,1]
+            #
+            # plt.figure(figsize=(7, 7))
+            # plt.plot(flip_xy_head[:, 0], flip_xy_head[:, 1], color='k')
+            # plt.title('Raw Traces (head)')
+            # plt.savefig(os.path.join(repo, 'Traces_head_xy_flipped.png'),
+            #             transparent=False)
+            # plt.show()
+            # plt.close()
+
+            center_arena = arena_coords.mean(axis=0)
+
+            for ln in (top_chamber, bottom_chamber, line_midbtw):
+                if ln is not None:
+                    ln[:, 1] = 2 * center_arena[1] - ln[:, 1]
+
+            arena_coords = np.array(overall_info['arena']['coords'])
+            center_arena = arena_coords.mean(axis=0)
+            xy_head[:, 1] = 2 * center_arena[1] - xy_head[:, 1]
+
+            plt.figure(figsize=(7, 7))
+            plt.plot(xy_head[:, 0], xy_head[:, 1], color='k')
+            #plt.axhline(37.5, color='crimson', ls='--', lw=1.5, label='shock/safe divider')
+            for ln, name, col in [(top_chamber, 'right', 'tab:blue'),
+                                  (bottom_chamber, 'left', 'tab:green'),
+                                  (line_midbtw, 'mid', 'tab:orange')]:
+                if ln is not None:
+                    plt.plot(ln[:, 0], ln[:, 1], color=col, ls='--', lw=1.5, label=name)
+            plt.title('Raw Traces (head)')
+            plt.savefig(os.path.join(repo, 'Traces_head_xy_flip.png'),
+                        transparent=False)
+            plt.show()
+            plt.close()
 
         # compute head direction
         head_direction = prep.compute_head_direction(xy_snout, xy_head, dx=sf, smooth=0.1)
@@ -422,42 +518,90 @@ for rat in rats:
         xy_head1 = xy_head[:xy_head_half]
         xy_head2 = xy_head[xy_head_half:]
 
-
         # Divide arena into two halves
         line2d = np.array([[0, 37.5], [25, 37.5]])
+        top = _relative2line(xy_head, top_chamber, direction='above')
+        bottom = _relative2line(xy_head, bottom_chamber, direction='below')
+
+        center_between = _relative2line(xy_head, line_midbtw, direction='above')
+        leftover = ~top & ~bottom & ~center_between
+
+        cats = [('top', top, 'tab:blue'),
+                ('bottom', bottom, 'tab:green'),
+                ('center_between', center_between, 'tab:orange'),
+                ('leftover', leftover, 'tab:red')]
+
+        fig, axes = plt.subplots(1, 4, figsize=(20, 6), sharex=True, sharey=True)
+        for ax, (name, mask, col) in zip(axes, cats):
+            ax.plot(xy_head[:, 0], xy_head[:, 1], color='0.85', lw=0.5, zorder=1)
+            ax.plot(xy_head[mask, 0], xy_head[mask, 1],
+                    'o', ms=2, color=col, alpha=0.4, zorder=2)
+            for ln in (top_chamber, bottom_chamber, line_midbtw):
+                if ln is not None:
+                    ax.plot(ln[:, 0], ln[:, 1], color='k', ls='--', lw=1)
+            ax.set_title(f'{name}  ({np.sum(mask) / len(mask) * 100:.1f}%)')
+            ax.set_aspect('equal')
+            ax.set(xlabel='X (cm)', ylabel='Y (cm)')
+
+        fig.suptitle(f'{rat} — {phase}: head positions by category')
+        fig.savefig(os.path.join(repo, 'traces_by_category.png'),
+                    bbox_inches='tight', dpi=150)
+        plt.tight_layout()
+        plt.close()
+
+        # count occupancy
+        P_head_in_left = np.sum(top) / len(top) * 100
+        P_head_in_right = np.sum(bottom) / len(bottom) * 100
+        P_head_in_center_between = np.sum(center_between) / len(center_between) * 100
+        P_head_center_top = np.sum(leftover) / len(leftover) * 100
+
+        print(f'{rat} {phase}: % in Safe = {P_head_in_left:.1f} '
+              f'% between Chambers ={P_head_in_center_between:.1f} % in Shock = {P_head_in_right:.1f} % in Center ={P_head_center_top:.1f} '
+              f'(sum={P_head_in_left+ P_head_in_center_between + P_head_in_right + P_head_center_top:.1f})')
 
         # compute time in shock compartment
-        if rat_info['shock_side'] == 'left':
-            head_in_shock = _relative2line(xy_head, line2d, direction='above')
-            P_head_in_shock = np.sum(head_in_shock) / len(head_in_shock) * 100
-            back_in_shock = _relative2line(xy_back, line2d, direction='above')
-            P_back_in_shock = np.sum(back_in_shock) / len(back_in_shock) * 100
+        # if rat_info['shock_side'] == 'left':
+        #     head_in_shock = _relative2line(xy_head, line2d, direction='above')
+        #     P_head_in_shock = np.sum(head_in_shock) / len(head_in_shock) * 100
+        #     back_in_shock = _relative2line(xy_back, line2d, direction='above')
+        #     P_back_in_shock = np.sum(back_in_shock) / len(back_in_shock) * 100
+        #
+        #     # For split: first half
+        #     head_in_shock1 = _relative2line(xy_head1, line2d, direction='above')
+        #     P_head_in_shock1 = np.sum(head_in_shock1) / len(head_in_shock1) * 100
+        #
+        #     # For split: second half
+        #     head_in_shock2 = _relative2line(xy_head2, line2d, direction='above')
+        #     P_head_in_shock2 = np.sum(head_in_shock2) / len(head_in_shock2) * 100
 
-            # For split: first half
-            head_in_shock1 = _relative2line(xy_head1, line2d, direction='above')
-            P_head_in_shock1 = np.sum(head_in_shock1) / len(head_in_shock1) * 100
-
-            # For split: second half
-            head_in_shock2 = _relative2line(xy_head2, line2d, direction='above')
-            P_head_in_shock2 = np.sum(head_in_shock2) / len(head_in_shock2) * 100
-
-        if rat_info['shock_side'] == 'right':
-            head_in_shock = _relative2line(xy_head, line2d, direction='below')
-            P_head_in_shock = np.sum(head_in_shock) / len(head_in_shock) * 100
-            back_in_shock = _relative2line(xy_back, line2d, direction='below')
-            P_back_in_shock = np.sum(back_in_shock) / len(back_in_shock) * 100
-
-            # For split: first half
-            head_in_shock1 = _relative2line(xy_head1, line2d, direction='below')
-            P_head_in_shock1 = np.sum(head_in_shock1) / len(head_in_shock1) * 100
-
-            # For split: second half
-            head_in_shock2 = _relative2line(xy_head2, line2d, direction='below')
-            P_head_in_shock2 = np.sum(head_in_shock2) / len(head_in_shock2) * 100
+        # if rat_info['shock_side'] == 'right':
+        #     head_in_shock = _relative2line(xy_head, line2d, direction='below')
+        #     P_head_in_shock = np.sum(head_in_shock) / len(head_in_shock) * 100
+        #     back_in_shock = _relative2line(xy_back, line2d, direction='below')
+        #     P_back_in_shock = np.sum(back_in_shock) / len(back_in_shock) * 100
+        #
+        #     # For split: first half
+        #     head_in_shock1 = _relative2line(xy_head1, line2d, direction='below')
+        #     P_head_in_shock1 = np.sum(head_in_shock1) / len(head_in_shock1) * 100
+        #
+        #     # For split: second half
+        #     head_in_shock2 = _relative2line(xy_head2, line2d, direction='below')
+        #     P_head_in_shock2 = np.sum(head_in_shock2) / len(head_in_shock2) * 100
 
         shock_side = rat_info['shock_side']
-        back_in_right = _relative2line(xy_back, line2d, direction='above')
-        P_back_in_right = np.sum(back_in_right) / len(back_in_right) * 100
+        head_in_shock = _relative2line(xy_head, line2d, direction='below')
+        P_head_in_shock = np.sum(head_in_shock) / len(head_in_shock) * 100
+
+        back_in_shock = _relative2line(xy_back, line2d, direction='below')
+        P_back_in_shock = np.sum(back_in_shock) / len(back_in_shock) * 100
+
+        # For split: first half
+        head_in_shock1 = _relative2line(xy_head1, line2d, direction='below')
+        P_head_in_shock1 = np.sum(head_in_shock1) / len(head_in_shock1) * 100
+
+        # For split: second half
+        head_in_shock2 = _relative2line(xy_head2, line2d, direction='below')
+        P_head_in_shock2 = np.sum(head_in_shock2) / len(head_in_shock2) * 100
 
         # compute occupancy head
         occupancy, occup_bins = np.histogramdd(xy_head, bins=bins)
@@ -503,6 +647,26 @@ for rat in rats:
         else:
             freezing = np.sum(low_speed.duration) / (time[-1] - time[0]) * 100
 
+        frozen = np.zeros(len(time), dtype=bool)
+        if len(low_speed) > 0:
+            for a, b in zip(np.atleast_1d(low_speed.start), np.atleast_1d(low_speed.stop)):
+                frozen[(time >= a) & (time <= b)] = True
+
+        frozen_in_shock = frozen & head_in_shock
+        P_freezing_in_shock = np.sum(frozen_in_shock) / len(frozen) * 100
+        P_freezing_given_shock = (np.sum(frozen_in_shock) / np.sum(head_in_shock) * 100
+                                  if np.sum(head_in_shock) else np.nan)
+
+        head_in_safe = ~head_in_shock
+        frozen_in_safe = frozen & head_in_safe
+
+        P_head_in_safe = np.sum(head_in_safe) / len(head_in_safe) * 100
+        P_freezing_in_safe = np.sum(frozen_in_safe) / len(frozen) * 100
+        P_freezing_given_safe = (np.sum(frozen_in_safe) / np.sum(head_in_safe) * 100
+                                 if np.sum(head_in_safe) else np.nan)
+
+
+        order_first = rat_info['first_obs']
         # save to h5 file
         with h5py.File(os.path.join(repo, 'position.hdf5'), 'w') as f:
             f['behavior/xy_snout'] = xy_snout
@@ -520,9 +684,95 @@ for rat in rats:
             f['behavior/nodes_xy'] = nodes_xy
             f['behavior/head_in_shock'] = head_in_shock
             f['behavior/back_in_shock'] = back_in_shock
-            f['behavior/back_in_right'] = back_in_right
-            f['behavior/freezing'] = freezing
+            f['behavior/P_head_in_shock'] = P_head_in_shock
+            f['behavior/P_back_in_shock'] = P_back_in_shock
+            #f['behavior/back_in_right'] = back_in_right
+            f['behavior/shock_side'] = shock_side
+            f['behavior/order_obs'] = order_first
+            f['behavior/freezing'] = freezing # in %
             #f['behavior/divider_distance'] = dist2divider
+            f['behavior/frozen'] = frozen # boolean array when freezing
+            f['behavior/P_freezing_in_shock'] = P_freezing_in_shock
+            f['behavior/P_freezing_given_shock'] = P_freezing_given_shock
+            f['behavior/frozen_in_safe'] = frozen_in_safe
+            f['behavior/P_freezing_in_safe'] = P_freezing_in_safe
+            f['behavior/P_freezing_given_safe'] = P_freezing_given_safe
+            f['behavior/top'] = top
+            f['behavior/bottom'] = bottom
+            f['behavior/center_between'] = center_between
+            f['behavior/leftover'] = leftover
+            f['behavior/P_head_in_safeCh'] = P_head_in_left
+            f['behavior/P_head_in_shockCh'] = P_head_in_right
+            f['behavior/P_head_inbetween'] = P_head_in_center_between
+            f['behavior/P_head_center'] = P_head_center_top
+
+
+        metrics = ['% on\nside', '% frozen on\nside (session)', '% frozen |\non side']
+        shock_vals = [P_head_in_shock, P_freezing_in_shock, P_freezing_given_shock]
+        safe_vals = [P_head_in_safe, P_freezing_in_safe, P_freezing_given_safe]
+
+        x = np.arange(len(metrics))
+        w = 0.38
+
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        b1 = ax.bar(x - w / 2, shock_vals, w, label='shock side', color='#b0413e')
+        b2 = ax.bar(x + w / 2, safe_vals, w, label='safe side', color='#3b6978')
+
+        ax.axhline(freezing, ls='--', lw=1, color='0.5',
+                   label=f'total freezing ({freezing:.1f}%)')
+
+        ax.set_ylim(0, 100)
+        ax.set_ylabel('%')
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics, fontsize=9)
+        ax.set_title(f'{rat} — {phase}\nfreezing by side (shock: {shock_side})', fontsize=10)
+        ax.legend(fontsize=8, loc='upper right')
+
+        for bars in (b1, b2):
+            for b in bars:
+                v = b.get_height()
+                if not np.isnan(v):
+                    ax.text(b.get_x() + b.get_width() / 2, v + 1.5, f'{v:.1f}',
+                            ha='center', va='bottom', fontsize=8)
+
+        fig.savefig(os.path.join(repo, 'freezing_by_side.png'),
+                    bbox_inches='tight', dpi=150)
+        plt.close()
+
+
+        # #plot occupancy with freezing in bins + total freezing in %
+        # freez = sns.jointplot(x=x, y=y, kind='hist',
+        #                    bins=(30, 30),
+        #                    cmap='crest', cbar=False,
+        #                    marginal_kws=dict(element='step'), color='#3b6978')
+        # freez.set_axis_labels('x', 'y')
+        # freez.ax_joint.axhline(37.5, color='grey', linestyle=':', linewidth=0.8)
+        # freez.ax_joint.set_xlim(0, 25)
+        # freez.ax_joint.set_ylim(0, 75)
+        #
+        # fig = freez.figure
+        # fig.subplots_adjust(right=0.80)
+        #
+        # joint_pos = freez.ax_joint.get_position()
+        # marg_pos = freez.ax_marg_y.get_position()
+        #
+        # bar_ax = fig.add_axes([marg_pos.x1 + 0.03, joint_pos.y0,
+        #                        0.08, joint_pos.height])
+        # bar_ax.bar(0, P_head_in_shock, width=0.6, color='k')
+        # bar_ax.set_ylim(0, 100)
+        # bar_ax.set_xticks([])
+        # bar_ax.set_ylabel('Time Spent on Shock Side (in %)')
+        # bar_ax.yaxis.set_label_position('right')
+        # bar_ax.yaxis.tick_right()
+        # freez.figure.suptitle(f'Occupancy for {rat} in {phase} (Shock side: {shock_side})')
+        # fig.text(0.01, 0.01, f'n = {len(x)} frames',
+        #          fontsize=7, color='grey', ha='left', va='bottom')
+        #
+        # freez.savefig(os.path.join(repo, 'occupancy_with_freezing.png'))
+        # # g1.savefig(os.path.join(repo, 'occupancy_joint_quant.svg'))
+        # plt.close(fig)
+
+
 
         #display data and save fig
         fig, ax = plt.subplots(1, 4, figsize=(20, 8), sharex=False, sharey=False)
@@ -637,7 +887,6 @@ for rat in rats:
         x, y = xy_head[:, 0], xy_head[:, 1]
 
         sns.set_theme(style='ticks')
-
         g = sns.jointplot(x=x, y=y, kind='hist',
                           bins=(30, 30),
                           cmap='crest', cbar=True,
@@ -683,7 +932,7 @@ for rat in rats:
                  fontsize=7, color='grey', ha='left', va='bottom')
 
         g1.savefig(os.path.join(repo, 'occupancy_joint_quant.png'))
-        g1.savefig(os.path.join(repo, 'occupancy_joint_quant.svg'))
+        #g1.savefig(os.path.join(repo, 'occupancy_joint_quant.svg'))
         plt.close(fig)
 
 
@@ -718,7 +967,7 @@ for rat in rats:
                  fontsize=7, color='grey', ha='left', va='bottom')
 
         g2.savefig(os.path.join(repo, 'occupancy_joint_quant_first.png'))
-        g2.savefig(os.path.join(repo, 'occupancy_joint_quant_first.svg'))
+        #g2.savefig(os.path.join(repo, 'occupancy_joint_quant_first.svg'))
         plt.close(fig)
 
         # Occupancy with Histogram + % in Shock Side barplot: SECOND
@@ -752,7 +1001,7 @@ for rat in rats:
                  fontsize=7, color='grey', ha='left', va='bottom')
 
         g3.savefig(os.path.join(repo, 'occupancy_joint_quant_second.png'))
-        g3.savefig(os.path.join(repo, 'occupancy_joint_quant_second.svg'))
+        #g3.savefig(os.path.join(repo, 'occupancy_joint_quant_second.svg'))
         plt.close(fig)
 
         # # FIRST HALF
@@ -798,7 +1047,41 @@ for rat in rats:
         # g2.savefig(os.path.join(repo, 'occupancy_joint_kde.png'))
         # plt.close(g2.figure)
 
+        # Velocity path
+        nodes_loc_check = fill_missing(xy_head)
+        thx_vel_fly0 = smooth_diff(nodes_loc_check[:])
 
+        fig = plt.figure(figsize=(15, 6))
+        ax1 = fig.add_subplot(121)
+        ax1.plot(xy_head[:, 0], xy_head[:, 1], 'k')
+        # ax1.set_xlim(0, 1024)
+        ax1.set_xticks([])
+        # ax1.set_ylim(0, 1024)
+        ax1.set_yticks([])
+        ax1.set_title('head tracks')
+
+        vmin = 0
+        vmax = 1
+
+        kp = thx_vel_fly0
+
+        ax2 = fig.add_subplot(122)
+        plotts=ax2.scatter(xy_head[:, 0], xy_head[:, 1], c=kp, s=3, vmin=vmin, vmax=vmax)
+        # ax2.set_xlim(0, 1024)
+        ax2.set_xticks([])
+        # ax2.set_ylim(0, 1024)
+        ax2.set_yticks([])
+        ax2.set_title('head tracks colored by speed')
+        cbar = fig.colorbar(plotts, ax=ax2)
+        cbar.set_label('Velocity')
+        plt.show()
+        plt.savefig(os.path.join(repo, 'velocity.png'))
+        plt.close()
+
+
+        # plt.plot(thx_vel_fly0)
+        # plt.savefig(os.path.join(repo, 'velocity_test.png'))
+        # plt.show()
 
 
 
@@ -932,3 +1215,75 @@ for rat in rats:
 #         fig.savefig(os.path.join(repo, 'chamber_occupancy.png'),
 #                     transparent=False, bbox_inches='tight', dpi=150)
 #         plt.close()
+
+
+import matplotlib.gridspec as gridspec
+
+def _frz_in(mask):
+    n = np.sum(mask)
+    return (np.sum(frozen & mask) / n * 100) if n else np.nan
+
+cats = [('top',            top,            'tab:blue'),
+        ('center_between', center_between, 'tab:orange'),
+        ('bottom',         bottom,         'tab:green'),
+        ('leftover',       leftover,       'tab:red')]
+
+arena_coords = np.array(overall_info['arena']['coords'])
+ax0, ax1 = arena_coords[:, 0].min(), arena_coords[:, 0].max()
+ay0, ay1 = arena_coords[:, 1].min(), arena_coords[:, 1].max()
+
+fine_bins = [np.arange(bins[0][0], bins[0][-1] + 0.5  , 0.5  ),
+             np.arange(bins[1][0], bins[1][-1] + 0.5  , 0.5  )]
+occ_fine, _ = np.histogramdd(xy_head, bins=fine_bins)
+occ_fine = occ_fine * sf
+occ_fine = nanGaussianSmooth(occ_fine, sigma=0.8 / 0.5  , truncate=2)
+vmax_fine = np.nanpercentile(occ_fine[occ_fine > 0], 99)   # or 95
+
+extent = [fine_bins[0][0], fine_bins[0][-1], fine_bins[1][0], fine_bins[1][-1]]
+
+fig = plt.figure(figsize=(9, 7))
+gs = gridspec.GridSpec(1, 3, width_ratios=[1, 5, 0.4], wspace=0.1)
+bax = fig.add_subplot(gs[0])
+ax  = fig.add_subplot(gs[1])
+cax = fig.add_subplot(gs[2])
+
+im = ax.imshow(occ_fine.T, origin='lower', extent=extent,
+               cmap='crest', aspect='equal', vmin=0, vmax=vmax_fine)
+
+for ln in (top_chamber, bottom_chamber, line_midbtw):
+    if ln is not None:
+        ax.plot(ln[:, 0], ln[:, 1], color='k', ls='--', lw=1)
+
+cx_col = (ax0 + ax1) / 2
+y_mid  = (ay0 + ay1) / 2
+dx     = 6
+
+label_pos = {
+    'top':            (cx_col-dx,      ay1 - 20),
+    'bottom':         (cx_col-dx,      ay0 + 20),
+    'leftover':       (cx_col - dx, y_mid),
+    'center_between': (cx_col + dx, y_mid),
+}
+
+for name, mask, col in cats:
+    if np.sum(mask) == 0:
+        continue
+    lx, ly = label_pos[name]
+    ax.text(lx, ly, f'{_frz_in(mask):.1f}%', ha='center', va='center',
+            fontsize=10, fontweight='bold', color='white')
+
+ax.set_xlim(ax0 - 2, ax1 + 2)
+ax.set_ylim(ay0 - 2, ay1 + 2)
+ax.set(xlabel='X (cm)', ylabel='Y (cm)', title=f'Occupancy & Freezing\n{rat} — {phase}')
+
+fig.colorbar(im, cax=cax, orientation='vertical', label='occupancy (s)')
+
+bax.bar(0, freezing, width=0.6, color='0.3')
+bax.set_ylim(0, 100)
+bax.set_xticks([])
+bax.set_ylabel('Total % Freezing')
+bax.text(0, freezing + 1.5, f'{freezing:.1f}%', ha='center', va='bottom', fontsize=9)
+
+fig.savefig(os.path.join(repo, 'occupancy_freezing_by_quadrant.png'),
+            bbox_inches='tight', dpi=150)
+plt.close()
