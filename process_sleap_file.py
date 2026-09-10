@@ -47,30 +47,30 @@ def export_dense_predictions(labels, out_file):
 folder = "/data07/Lina/6Chamber_LbO/Data_analysis"
 folder_raw = '/data07/Lina/6Chamber_LbO/Data_collection'
 
-model_dir = "/data07/Lina/6Chamber_LbO/Data_analysis/SLEAP/SingleAnimal/test_model/" # Folder containing SLEAP model
+model_dir = "/data07/Lina/6Chamber_LbO/Data_analysis/SLEAP/SingleAnimal/test_model/260828_152828.single_instance.n=370/" # Folder containing SLEAP model
 
 rats = [
-    'F_B1C1R1',
-    'F_B1C1R3',
-    'M_B1C1R1',
-    'M_B1C1R3',
-    'F_B2C1R1',
-    'F_B2C1R3',
-    'M_B2C1R1',
-    'M_B2C1R3',
-    'F_B3C1R1',
-    'F_B3C1R3',
-    'M_B3C1R1',
+    # 'F_B1C1R1',
+    # 'F_B1C1R3',
+    # 'M_B1C1R1',
+    # 'M_B1C1R3',
+    # 'F_B2C1R1',
+    # 'F_B2C1R3',
+    #'M_B2C1R1',
+    # 'M_B2C1R3',
+    # 'F_B3C1R1',
+    # 'F_B3C1R3',
+    # 'M_B3C1R1',
     'M_B3C1R3'
 ]
 
 phases = [
     'Baseline_Closed',
-    'Baseline_Open',
-    'Observation_Neutral',
-    'Observation_Shock',
-    'Recall_Closed',
-    'Recall_Open'
+    # 'Baseline_Open',
+    # 'Observation_Neutral',
+    # 'Observation_Shock',
+    # 'Recall_Closed',
+    # 'Recall_Open'
 ]
 
 # MAIN SCRIPT
