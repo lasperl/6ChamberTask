@@ -102,7 +102,7 @@ ax.hist2d(xy_in[:, 0], xy_in[:, 1], bins=80, cmap="viridis", norm="log")
 ax.set_aspect("equal"); ax.set_xlabel("x (cm)"); ax.set_ylabel("y (cm)")
 plt.tight_layout(); plt.savefig(FOLDER / "all_positions_in.png", dpi=150); plt.close()
 
-# mask from the arena lines
+# Cell 3: mask for GLM
 # median position of the lines
 L = {k: [] for k in ("line_shock", "line_safe", "line_middle")}
 for rat in RATS:
@@ -141,8 +141,6 @@ ye = y_axis + bin_cm * np.arange(-ny, ny + 1)
 print(f"grid {len(xe) - 1} x {len(ye) - 1} bins of {bin_cm} cm")
 
 
-
-# mask for GLM
 xc = (xe[:-1] + xe[1:]) / 2
 yc = (ye[:-1] + ye[1:]) / 2
 XC, YC = np.meshgrid(xc, yc, indexing="ij")
@@ -152,7 +150,7 @@ mask = (in_x_wide & (np.abs(YC - y_axis) <= half_wide)) | (in_x_narrow & (np.abs
 print(mask.shape, mask.sum(), "bins kept after masking")
 
 
-MAPS = {key: occ_map(xy) for key, xy in POS.items()} # access by MAPS
+MAPS = {key: occ_map(xy) for key, xy in POS.items()}
 print(len(MAPS), "maps")
 
 # maps of the two recall halves (first half vs last half)
@@ -163,15 +161,13 @@ print(MAPS[(RATS[0], "Recall_1")].sum(), MAPS[(RATS[0], "Recall_2")].sum())
 # map = MAPS[("F_B1C1R1", "Recall_Closed")]
 
 keys = list(MAPS.keys())
-key = keys[np.random.randint(len(keys))]     # random rat x phase
+key = keys[np.random.randint(len(keys))]     # random rat and phase
 print(key)
 img = np.full(mask.shape, np.nan)
 img[mask] = MAPS[key]
 
 
-# Cell 3: z-score each map
-# FUNCTIONS
-# Cell 6: OLS for one rat (for partial correlwtions)
+# Cell 4: OLS for one rat (for partial correlwtions)
 predictors = {"base": "Baseline_Closed", "neut": "Observation_Neutral", "shock": "Observation_Shock"}
 
 print('OLS per rat')
@@ -179,7 +175,7 @@ order = {}
 rows = []
 for rec in ("Recall_Closed", "Recall_1", "Recall_2"):
     for rat in RATS:
-        y = z(MAPS[(rat, rec)])
+        y = z(MAPS[(rat, rec)]) #
         X = np.column_stack([z(MAPS[(rat, ph)]) for ph in predictors.values()])
         b, *_ = np.linalg.lstsq(X, y, rcond=None)
         res = y - X @ b
@@ -209,7 +205,7 @@ for k in predictors:
 print(long.head())
 
 
-# Cell 9: bambi OLS
+# Cell 5: bambi OLS
 m = bmb.Model("y ~ 0 + base + neut + shock + (0 + base + neut + shock | rat)", long, family="gaussian")
 idata = m.fit(draws=1000, tune=1000, chains=4, target_accept=0.9, random_seed=1)
 
@@ -217,7 +213,7 @@ print(az.summary(idata, var_names=["base", "neut", "shock", "sigma"]))
 
 
 
-# Cell 11: bambi with order
+# Cell 6: bambi with order
 m_ord = bmb.Model("y ~ 0 + base + neut + shock + order_c + base_x_order + neut_x_order + shock_x_order"
                   " + (0 + base + neut + shock | rat)", long, family="gaussian")
 idata_ord = m_ord.fit(draws=1000, tune=1000, chains=4, target_accept=0.9, random_seed=1)
@@ -226,7 +222,7 @@ names = ["base", "neut", "shock", "order_c", "base_x_order", "neut_x_order", "sh
 print(az.summary(idata_ord, var_names=names))
 
 
-# Cell 12: bambi betas per rat
+# Cell 7: bambi betas per rat
 post = idata.posterior
 rows = []
 for k in predictors:
@@ -295,7 +291,7 @@ az.summary(idata_sex, var_names=names).to_csv(FOLDER / "glm_sex_order_summary.cs
 
 
 
-# Cell 14b: GLM figure - betas per rat + group beta only
+# GLM figure - betas per rat + group beta only
 NAMES = {"base": "Baseline", "neut": "Obs neutral", "shock": "Obs shock"}
 SEX_COL = {"F": "tab:orange", "M": "tab:green"}
 ORD_MK = {"safe": "o", "shock": "s"}
@@ -325,7 +321,6 @@ plt.tight_layout(); plt.savefig(FOLDER / "glm_betas_all_rats.png", dpi=200); plt
 
 #EXCLUDE = ["M_B2C1R1"]
 # Plot occupacny maps averages for males and females - neutral obs and recall (maybe also correlation between them)
-# Plot occupancy map averages for males and females - neutral obs and recall + correlation between them
 SHOW = ["Baseline_Closed", "Observation_Neutral", "Observation_Shock", "Recall_Closed"]
 ext = [xe[0], xe[-1], ye[0], ye[-1]]
 
@@ -346,20 +341,20 @@ for j, ph in enumerate(SHOW):
     axes[0, j].set_title(ph.replace("_Closed", "").replace("Observation_", "Obs_"))
 for i, lab in enumerate(["F (mean)", "M (mean)", "M - F (red = M more)"]):
     axes[i, 0].set_ylabel(lab)
-for ax in axes.flat:                                # low y = shock side, high y = safe side
+for ax in axes.flat:
     ax.text(0.5, 0.01, "shock side", transform=ax.transAxes, ha="center", va="bottom", fontsize=7, color="tab:red")
     ax.text(0.5, 0.99, "safe side", transform=ax.transAxes, ha="center", va="top", fontsize=7, color="tab:blue")
 #plt.tight_layout(); plt.savefig(FOLDER / "mean_maps_by_sex.png", dpi=150); plt.close()
 plt.tight_layout(); plt.savefig(FOLDER / "mean_maps_by_sex_excl.png", dpi=150); plt.close()
 
 # correlation between the maps per rat (plain r, no other maps removed)
-cr = pd.DataFrame([{"rat": r, "sex": r[0],
-                    "r_neut_recall": np.corrcoef(MAPS[(r, "Observation_Neutral")], MAPS[(r, "Recall_Closed")])[0, 1],
-                    "r_base_recall": np.corrcoef(MAPS[(r, "Baseline_Closed")], MAPS[(r, "Recall_Closed")])[0, 1],
-                    "r_base_neut": np.corrcoef(MAPS[(r, "Baseline_Closed")], MAPS[(r, "Observation_Neutral")])[0, 1]}
-                   for r in RATS])
-print(cr.round(3).to_string(index=False))
-print(cr.groupby("sex")[["r_neut_recall", "r_base_recall", "r_base_neut"]].mean().round(3))
+# cr = pd.DataFrame([{"rat": r, "sex": r[0],
+#                     "r_neut_recall": np.corrcoef(MAPS[(r, "Observation_Neutral")], MAPS[(r, "Recall_Closed")])[0, 1],
+#                     "r_base_recall": np.corrcoef(MAPS[(r, "Baseline_Closed")], MAPS[(r, "Recall_Closed")])[0, 1],
+#                     "r_base_neut": np.corrcoef(MAPS[(r, "Baseline_Closed")], MAPS[(r, "Observation_Neutral")])[0, 1]}
+#                    for r in RATS])
+# print(cr.round(3).to_string(index=False))
+# print(cr.groupby("sex")[["r_neut_recall", "r_base_recall", "r_base_neut"]].mean().round(3))
 
 
 
@@ -372,7 +367,7 @@ print(cr.groupby("sex")[["r_neut_recall", "r_base_recall", "r_base_neut"]].mean(
 #########################################################################################
 # Build df to correlate betas with other stuff
 
-# Cell 14c: betas per rat from the sex + order model, overall and per-sex group betas
+# betas per rat from the sex + order model, overall and per-sex group betas
 NAMES = {"base": "Baseline", "neut": "Obs neutral", "shock": "Obs shock"}
 SEX_COL = {"F": "tab:orange", "M": "tab:green"}
 ORD_MK = {"safe": "o", "shock": "s"}
